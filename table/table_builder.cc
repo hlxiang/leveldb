@@ -56,6 +56,8 @@ struct TableBuilder::Rep {
   // blocks.
   //
   // Invariant: r->pending_index_entry is true only if data_block is empty.
+  // 直到add下一个data_block的第一个key时,才add 上一个data_blk的idx_blk,
+  // 而此时已知上个data_blk的key range,so idx_blk的key只要>= all entries就行，可以用一个较短的key节省空间
   bool pending_index_entry;
   BlockHandle pending_handle;  // Handle to add to index block
 
@@ -63,7 +65,7 @@ struct TableBuilder::Rep {
 };
 
 TableBuilder::TableBuilder(const Options& options, WritableFile* file)
-    : rep_(new Rep(options, file)) {
+    : rep_(new Rep(options, file)) { // 每个tablebuild申请一个Rep，记录data_block index_block等信息
   if (rep_->filter_block != nullptr) {
     rep_->filter_block->StartBlock(0);
   }
@@ -87,7 +89,7 @@ Status TableBuilder::ChangeOptions(const Options& options) {
   // will automatically pick up the updated options.
   rep_->options = options;
   rep_->index_block_options = options;
-  rep_->index_block_options.block_restart_interval = 1;
+  rep_->index_block_options.block_restart_interval = 1; // 这个重启间隔啥作用
   return Status::OK();
 }
 
@@ -99,8 +101,8 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
   }
 
-  if (r->pending_index_entry) {
-    assert(r->data_block.empty());
+  if (r->pending_index_entry) { // idx_blk add流程还没有搞明白 2022.5.30
+    assert(r->data_block.empty()); // 初始化pending_idx_entry是false, 仅当data_block为空时进此逻辑
     r->options.comparator->FindShortestSeparator(&r->last_key, key);
     std::string handle_encoding;
     r->pending_handle.EncodeTo(&handle_encoding);
@@ -130,7 +132,7 @@ void TableBuilder::Flush() {
   assert(!r->pending_index_entry);
   WriteBlock(&r->data_block, &r->pending_handle);
   if (ok()) {
-    r->pending_index_entry = true;
+    r->pending_index_entry = true; // data_blk写入file后将此置位
     r->status = r->file->Flush();
   }
   if (r->filter_block != nullptr) {
@@ -145,7 +147,7 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
   //    crc: uint32
   assert(ok());
   Rep* r = rep_;
-  Slice raw = block->Finish();
+  Slice raw = block->Finish(); // 将restats_数组中保存的Group(16个entries)的长度和restarts本身的长度信息写入buffer_尾部
 
   Slice block_contents;
   CompressionType type = r->options.compression;
@@ -169,7 +171,7 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
       break;
     }
   }
-  WriteRawBlock(block_contents, type, handle);
+  WriteRawBlock(block_contents, type, handle); // 将此blk中的buf写入file中
   r->compressed_output.clear();
   block->Reset();
 }
@@ -177,10 +179,10 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
 void TableBuilder::WriteRawBlock(const Slice& block_contents,
                                  CompressionType type, BlockHandle* handle) {
   Rep* r = rep_;
-  handle->set_offset(r->offset);
+  handle->set_offset(r->offset); // 记录block的offset和大小
   handle->set_size(block_contents.size());
-  r->status = r->file->Append(block_contents);
-  if (r->status.ok()) {
+  r->status = r->file->Append(block_contents); // 将此block写入待flush的file中
+  if (r->status.ok()) { // 每个block写完后需要crc校验,并写入block尾部
     char trailer[kBlockTrailerSize];
     trailer[0] = type;
     uint32_t crc = crc32c::Value(block_contents.data(), block_contents.size());
@@ -197,7 +199,7 @@ Status TableBuilder::status() const { return rep_->status; }
 
 Status TableBuilder::Finish() {
   Rep* r = rep_;
-  Flush();
+  Flush(); // 这里是只flush了data_block部分吧
   assert(!r->closed);
   r->closed = true;
 
@@ -211,7 +213,7 @@ Status TableBuilder::Finish() {
 
   // Write metaindex block
   if (ok()) {
-    BlockBuilder meta_index_block(&r->options);
+    BlockBuilder meta_index_block(&r->options); // 对应的filter的元数据信息
     if (r->filter_block != nullptr) {
       // Add mapping from "filter.Name" to location of filter data
       std::string key = "filter.";
@@ -238,7 +240,7 @@ Status TableBuilder::Finish() {
   }
 
   // Write footer
-  if (ok()) {
+  if (ok()) { // 最后写footer尾部元数据,像fs中的superblock作用，感知元信息的作用
     Footer footer;
     footer.set_metaindex_handle(metaindex_block_handle);
     footer.set_index_handle(index_block_handle);

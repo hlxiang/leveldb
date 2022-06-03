@@ -18,7 +18,7 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options,
                   TableCache* table_cache, Iterator* iter, FileMetaData* meta) {
   Status s;
   meta->file_size = 0;
-  iter->SeekToFirst();
+  iter->SeekToFirst(); // memtable的iter指向头部
 
   std::string fname = TableFileName(dbname, meta->number);
   if (iter->Valid()) {
@@ -29,14 +29,14 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options,
     }
 
     TableBuilder* builder = new TableBuilder(options, file);
-    meta->smallest.DecodeFrom(iter->key());
+    meta->smallest.DecodeFrom(iter->key()); // 使用FileMetaData记录memtable中的最小key
     Slice key;
     for (; iter->Valid(); iter->Next()) {
       key = iter->key();
       builder->Add(key, iter->value());
     }
     if (!key.empty()) {
-      meta->largest.DecodeFrom(key);
+      meta->largest.DecodeFrom(key); // 记录最大key
     }
 
     // Finish and check for builder errors
